@@ -101,7 +101,7 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer,
                     dataset_name: str, model_name: str, epoch: int, checkpoint_dir: pathlib.Path = pathlib.Path("checkpoints/sensitivity/")):
     """Saves a model checkpoint to file."""
     if not checkpoint_dir.exists():
-        checkpoint_dir.mkdir()
+        checkpoint_dir.mkdir(parents=True)
     path = checkpoint_dir / f"{model_name}__{dataset_name}__{epoch}.pt"
     print(f"Saving checkpoint to '{path}' ...")
     state = {
@@ -293,6 +293,9 @@ def eval_session(args):
     print(f"{least_sensitive_i=}")
     print(f"{most_sensitive_i=}")
     print(f"sorted_idx={sorted_sensitivities}")
+
+    if not pathlib.Path("fig").exists():
+        pathlib.Path("fig").mkdir()
 
     fig, axs = plt.subplots(4, 4, figsize=(6,6))
     for i in range(axs.shape[0]):
