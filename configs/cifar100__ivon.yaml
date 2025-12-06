@@ -1,0 +1,11 @@
+lr: 0.2
+batch: 50
+epochs: 200
+warmup_epochs: 5
+optim:
+  lambda_: 50000
+  h0: 0.5
+  beta1: 0.9
+  beta2: 0.99999
+  weight_decay: 0.0002
+n_classes: 100

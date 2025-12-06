@@ -1,154 +1,12 @@
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader, Subset
-from torchvision.transforms.v2 import Compose, ToImage, ToDtype, Normalize
-
-from torch.optim.lr_scheduler import LinearLR
-
-import torchvision
-from torchvision.datasets import CIFAR10
+from torch.utils.data import DataLoader, Subset
 
 from ivon import IVON
 
-from omegaconf import OmegaConf, DictConfig
-
 import pathlib
 from tqdm import tqdm
-
-from typing import Tuple
-
-
-# Create hyperparameter configs for each considered dataset
-
-CIFAR10_CONFIG = OmegaConf.create({
-    "lr": 0.2,
-    "batch": 50,
-    "epochs": 200,
-    "warmup_epochs": 5,
-    "optim": {
-        "lambda_": 50000,
-        "h0": 0.5,
-        "beta1": 0.9,
-        "beta2": 1.0 - 1e-5,
-        "weight_decay": 0.0002
-    },
-    "n_classes": 10
-})
-
-IMAGENET_CONFIG = OmegaConf.create({
-    "lr": 3,
-    "batch": 50,
-    "epochs": 200,
-    "warmup_epochs": 5,
-    "optim": {
-        "lambda_": 14_000_000, # TODO: Check
-        "h0": 0.05,
-        "beta1": 0.9,
-        "beta2": 1.0 - 1e-6,
-        "weight_decay": 5e-5
-    },
-    "n_classes": 1000
-})
-
-CONFIGS = {"cifar10": CIFAR10_CONFIG}
-
-NORM_MEAN = torch.tensor([0.485, 0.456, 0.406])
-NORM_STD = torch.tensor([0.229, 0.224, 0.225])
-
-
-def make_dataset(name: str, root: pathlib.Path = pathlib.Path("data")) -> Tuple[Dataset, Dataset]:
-    """
-    Loads the dataset with name 'name' and returns a tuple (train_set, val_set)
-    """
-    if name == "cifar10":
-        transform = Compose([
-            ToImage(),
-            ToDtype(torch.float32, scale=True),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        train_set = CIFAR10(root=root, train=True, download=True, transform=transform)
-        val_set = CIFAR10(root=root, train=False, download=True, transform=transform)
-        return train_set, val_set
-    else:
-        raise NotImplementedError()
-
-def denormalize(img_tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Takes in a normalized image tensor of shape 
-    (batch, 3, height, width)
-    and returns a denormalized image tensor of shape
-    (batch, height, width, 3)
-    """
-    img_01 = img_tensor * NORM_STD[None, :, None, None] + NORM_MEAN[None, :, None, None]
-    img_01 = img_01.clamp(min=0.0, max=1.0).permute(0, 2, 3, 1)
-    return img_01
-
-
-def init_model(name: str, n_classes: int) -> nn.Module:
-    """
-    Initializes a torch model based on the name of the architecture and the number of ouput classes
-    """
-    if name == "resnet18":
-        model = torchvision.models.resnet18()
-        model.fc = nn.Linear(model.fc.in_features, n_classes)
-        return model
-    else:
-        raise NotImplementedError(f"Unsupported model name '{name}'")
-
-
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, 
-                    dataset_name: str, model_name: str, epoch: int, checkpoint_dir: pathlib.Path = pathlib.Path("checkpoints/sensitivity/")):
-    """Saves a model checkpoint to file."""
-    if not checkpoint_dir.exists():
-        checkpoint_dir.mkdir(parents=True)
-    path = checkpoint_dir / f"{model_name}__{dataset_name}__{epoch}.pt"
-    print(f"Saving checkpoint to '{path}' ...")
-    state = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-    }
-    torch.save(state, path)
-
-
-def load_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, 
-                    dataset_name: str, model_name: str, epoch: int, checkpoint_dir: pathlib.Path = pathlib.Path("checkpoints/sensitivity/")):
-    """Loads a model checkpoint trom file onto 'model'."""
-    if not checkpoint_dir.exists():
-        checkpoint_dir.mkdir()
-    path = checkpoint_dir / f"{model_name}__{dataset_name}__{epoch}.pt"
-
-    state = torch.load(path)
-    model.load_state_dict(state["model"])
-    optimizer.load_state_dict(state["optimizer"])
-
-
-def train(args, model: nn.Module, optimizer: IVON, train_loader: DataLoader[Tuple[torch.Tensor, torch.Tensor]], config: DictConfig):
-    """
-    Runs a training loop, with hyperparameters 'config'
-    """
-    device = torch.device("cuda:0")
-
-    schedule = LinearLR(optimizer, start_factor = 1/config.warmup_epochs, total_iters=config.warmup_epochs)
-    for epoch in range(config.epochs):
-        running_loss = 0.0
-        for x, y in train_loader:
-            x = x.to(device)
-            y = y.to(device)
-
-            with optimizer.sampled_params(train=True):
-                optimizer.zero_grad()
-                logits = model(x)
-                loss = nn.functional.cross_entropy(logits, y)
-                loss.backward()
-
-            optimizer.step()
-            running_loss += loss.item() * x.size(0) / len(train_loader.dataset)
-        schedule.step()
-        print(f"Epoch {epoch}; running_loss={running_loss:.4g}")
-
-        if (epoch + 1) in [1, 2, 5, 10, 50, 100, 150, 200]:
-            save_checkpoint(model, optimizer, dataset_name=args.dataset_name, model_name=args.model_name, epoch=epoch + 1)
 
 
 @torch.no_grad()
@@ -159,10 +17,12 @@ def get_error_batch(x: torch.Tensor, y: torch.Tensor, model: nn.Module, n_classe
 
     Follows definitions in appendix C.5. of the IVON paper.
     """
+
     logits = model(x)
     p = nn.functional.softmax(logits, dim=-1)
     error = p - nn.functional.one_hot(y, num_classes=n_classes)
     return error
+
 
 def get_variance_batch(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes: int) -> torch.Tensor:
     """
@@ -170,6 +30,8 @@ def get_variance_batch(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes:
     Uses the optimizer state of the IVON optimizer to retrieve the relevant variances.
     Returns a tensor of shape (batch, n_classes, n_classes).
     """
+
+    # The implementation here just calls get_variance_sincle on each data point in x and concatenates the results
     sub_results = []
     for i in range(x.size(0)):
         sub_results.append(get_variance_single(x=x[i], model=model, ivon=ivon, n_classes=n_classes))
@@ -206,7 +68,7 @@ def get_variance_single(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes
     for i in range(n_classes):
         output = model(x[None, ...]) 
 
-        # Get i:th row of jacobian == derivative of i:th output logit
+        # Get i:th row of jacobian = derivative of i:th output logit
         metric = output.squeeze(0)[i]
         assert metric.shape == ()
 
@@ -224,51 +86,64 @@ def get_variance_single(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes
 
     # Do the contraction.
     # We use einsum for the sake of memory efficiency since the matrices are large.
-    # V = J^T @ diag(sigma²) @ J   <--> einsum("pc, pq, dq", jacobian, diag(sigma2), jacobian)  <--> einsum("pc,p,pd", jacobian, sigma2, jacobian)
+    # V = J^T @ diag(sigma²) @ J   <-->   einsum("pc, pq, dq", jacobian, diag(sigma2), jacobian)   <-->   einsum("pc,p,pd", jacobian, sigma2, jacobian)
     v = torch.einsum("pc,p,pd", jacobian, sigma2, jacobian)
+
+    # Sanity check for the shape
     assert v.shape == (n_classes, n_classes)
+
     return v
 
-
-def train_session(args):
-    """
-    Run a full training run based on passed user args
-    """
-    device = torch.device("cuda:0")
-    train_set, val_set = make_dataset(args.dataset_name, root=args.data_root)
-
-    config = CONFIGS[args.dataset_name]
-    train_loader = DataLoader(train_set, batch_size=config.batch, shuffle=True)
-
-    model = init_model(args.model_name, n_classes=config.n_classes).to(device)
-    optimizer = IVON(model.parameters(), lr=config.lr, ess=config.optim.lambda_, beta1=config.optim.beta1, beta2=config.optim.beta2, weight_decay=config.optim.weight_decay, hess_init=config.optim.h0)
-
-    train(args, model, optimizer, train_loader, config)
 
 def eval_session(args):
     """
     Runn a full sensitivity eval session based on passed user args
     """
-    device = torch.device("cuda:0")
-    train_set, val_set = make_dataset(args.dataset_name, root=args.data_root)
-
-    single_category = args.showcase_category
-    single_category_val_set = Subset(val_set, list(i for i in range(len(val_set)) if val_set[i][1] == single_category))
-
-    config = CONFIGS[args.dataset_name]
-    val_loader = DataLoader(val_set, batch_size=10)
-    single_category_loader = DataLoader(single_category_val_set, shuffle=False, batch_size=10)
-
-    model = init_model(args.model_name, n_classes=config.n_classes).to(device)
-    optimizer = IVON(model.parameters(), lr=config.lr, ess=config.optim.lambda_, beta1=config.optim.beta1, beta2=config.optim.beta2, weight_decay=config.optim.weight_decay, hess_init=config.optim.h0)
-
+    from utils import load_checkpoint, load_dataset, denormalize
     import numpy as np
     import matplotlib.pyplot as plt
+    import matplotlib
 
-    epoch = 100
-    load_checkpoint(model, optimizer, dataset_name=args.dataset_name, model_name=args.model_name, epoch=epoch)
+    # Set rcParams for unified figures
+    matplotlib.rcParams.update({
+        "text.usetex": True,
+        "font.family": "serif",
+        "font.serif": ["Times"],
+        "text.latex.preamble": r"\usepackage{amsmath}",
+        "figure.titlesize": 16,
+        "axes.titlesize": 14,
+        "axes.labelsize": 12,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "legend.fontsize": 11,
+        "legend.title_fontsize": 12,
+    })
+
+    # Determine device
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+    # Initialize dataset
+    _, val_set = load_dataset(args.dataset, root=args.data_root)
+
+    # Create a subset containing only the class of interest
+    single_category_set = Subset(val_set, [i for i in range(len(val_set)) if val_set[i][1] == args.showcase_category])
+
+    # Create dataloaders
+    val_loader = DataLoader(val_set, batch_size=10)
+    single_category_loader = DataLoader(single_category_set, shuffle=False, batch_size=10)
+
+    # Load the model, optimizer and hyperparameter config from file
+    model, optimizer, config = load_checkpoint(
+        optimizer_name="ivon",
+        dataset_name=args.dataset,
+        model_name=args.model,
+        epoch=args.epoch
+    )
+    assert isinstance(optimizer, IVON)
+    model.to(device)
     model.eval()
 
+    # Run through the data for all items of the showcase category and compute sensitivies
     all_sensitivities = []
     for i, (x, y) in enumerate(tqdm(single_category_loader, desc="Evaluating sensitivities")):
         x = x.to(device)
@@ -281,12 +156,25 @@ def eval_session(args):
         sensitivity = sensitivity.norm(2, dim=-1)  # Shape (batch,)
         all_sensitivities += sensitivity.cpu().numpy().tolist()
 
+    # Create a directory for outputting figures
+    figdir = pathlib.Path("fig/sensitivity")
+    if not figdir.exists():
+        print(f"Creating directory '{figdir}' for saving sensitivity figures")
+        figdir.mkdir(parents=True)
+
+    # Make a histogram showing the distribution of sensitivities
+    fig = plt.figure(figsize=(4,2), layout="tight")
     plt.hist(all_sensitivities)
     plt.xlabel("Sensitivity")
     plt.ylabel("Count")
-    plt.savefig(f"fig/sensitivity_distribution__{args.dataset_name}__{single_category}__{args.model_name}.jpg", dpi=300)
+    plt.yscale("log")
+    path_jpg = figdir / f"histogram__{args.dataset}__category{args.showcase_category}__{args.model}__epoch{args.epoch}.jpg"
+    path_svg = path_jpg.with_suffix(".svg")
+    plt.savefig(path_jpg, dpi=300)
+    plt.savefig(path_svg)
     plt.show()
 
+    # Sorte the sensitivities to find the highest and lowest sensitivity images
     sorted_sensitivities = np.argsort(all_sensitivities)
     least_sensitive_i = int(np.argmin(all_sensitivities))
     most_sensitive_i = int(np.argmax(all_sensitivities))
@@ -294,55 +182,50 @@ def eval_session(args):
     print(f"{most_sensitive_i=}")
     print(f"sorted_idx={sorted_sensitivities}")
 
-    if not pathlib.Path("fig").exists():
-        pathlib.Path("fig").mkdir()
-
-    fig, axs = plt.subplots(4, 4, figsize=(6,6))
-    for i in range(axs.shape[0]):
-        for j in range(axs.shape[1]):
-            flat_idx = i*axs.shape[1] + j
-            idx = sorted_sensitivities[flat_idx]
-            print("low", idx, "category", single_category_val_set[idx][1])
-            axs[i,j].imshow(denormalize(single_category_val_set[idx][0]).squeeze(0))
-            axs[i,j].axis("off")
-    plt.savefig(f"fig/least_sensitive__{args.dataset_name}__{single_category}__{args.model_name}.jpg", dpi=300)
+    # Show the images with highest and lowest sensitivities
+    fig, axs = plt.subplots(4, 2, figsize=(3,6), layout="tight")
+    for i in range(axs.size):
+        ax = axs.flatten()[i]
+        img_idx = sorted_sensitivities[i]
+        ax.imshow(denormalize(single_category_set[img_idx][0]).squeeze(0))
+        ax.axis("off")
+    path_jpg = figdir / f"least_sensitive__{args.dataset}__category{args.showcase_category}__{args.model}__epoch{args.epoch}.jpg"
+    path_svg = path_jpg.with_suffix(".svg")
+    plt.savefig(path_jpg, dpi=300)
+    plt.savefig(path_svg)
     plt.suptitle("Least sensitive")
     plt.show()
 
-    fig, axs = plt.subplots(4, 4, figsize=(6,6))
-    for i in range(axs.shape[0]):
-        for j in range(axs.shape[1]):
-            flat_idx = -(i*axs.shape[1] + j + 1)
-            idx = sorted_sensitivities[flat_idx]
-            print("high", idx, "category", single_category_val_set[idx][1])
-            axs[i,j].imshow(denormalize(single_category_val_set[idx][0]).squeeze(0))
-            axs[i,j].axis("off")
-    plt.savefig(f"fig/most_sensitive__{args.dataset_name}__{single_category}__{args.model_name}.jpg", dpi=300)
+    fig, axs = plt.subplots(4, 2, figsize=(3,6), layout="tight")
+    for i in range(axs.size):
+        ax = axs.flatten()[i]
+        img_idx = sorted_sensitivities[-i-1]
+        ax.imshow(denormalize(single_category_set[img_idx][0]).squeeze(0))
+        ax.axis("off")
+    path_jpg = figdir / f"most_sensitive__{args.dataset}__category{args.showcase_category}__{args.model}__epoch{args.epoch}.jpg"
+    path_svg = path_jpg.with_suffix(".svg")
+    plt.savefig(path_jpg, dpi=300)
+    plt.savefig(path_svg)
     plt.suptitle("Most sensitive")
     plt.show()
-
 
 
 if __name__ == '__main__':
     # Example arguments
 
-    # To train with default dataset/model:
-    # python3 sensitivity.py --train
-
-    # To eval on CIFAR10 (default) showcasing the first class (airplane)
-    # python3 sensitivity.py -m cifar10 --showcase-category 0
+    # To eval on CIFAR10 (default) checkpoint at epoch 50 showcasing the first class (airplane)
+    # > python3 sensitivity.py -m cifar10 -e 50 --showcase-category 0
 
     import argparse
+    from utils import SUPPORTED_ARCHITECTURES, SUPPORTED_DATASETS
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train", action="store_true", default=False, help="Flag to train the model. (default=%(default)s)")
-    parser.add_argument("--no-eval", action="store_true", default=False, help="Flag to only train, with no evaluation. (default=%(default)s)")
-    parser.add_argument("-m", "--model-name", type=str, default="resnet18", help="Name of model architecture to train. (default=%(default)s)")
-    parser.add_argument("-d", "--dataset-name", type=str, default="cifar10", help="Name of dataset to train. (default=%(default)s)")
+    parser.add_argument("-m", "--model", type=str, default="resnet18", help="Name of model architecture to train. (default=%(default)s)", choices=SUPPORTED_ARCHITECTURES)
+    parser.add_argument("-d", "--dataset", type=str, default="cifar10", help="Name of dataset to train. (default=%(default)s)", choices=SUPPORTED_DATASETS)
+    parser.add_argument("-e", "--epoch", type=int, default=200, help="Epoch of model checkpoint to load. (default=%(default)s)")
     parser.add_argument("--data-root", type=pathlib.Path, default=pathlib.Path("./data"), help="Directory where datasets are downloaded to. (default = '%(default)s')")
     parser.add_argument("--showcase-category", type=int, default=9, help="Index of category to use when getting example images with high/low sensitivity. (default=%(default)s)")
 
     args = parser.parse_args()
-    if args.train:
-        train_session(args)
-    if not args.no_eval:
-        eval_session(args)
+    eval_session(args)
+
