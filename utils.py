@@ -195,13 +195,13 @@ def save_checkpoint(model: nn.Module,
         directory.mkdir(parents=True)
 
     # Extract the name of the optimizer from the optimizer object
-    if isinstance(optimizer, torch.optim.Adam):
-        optimizer_name = "adam"
-    elif isinstance(optimizer, torch.optim.AdamW):
+    if type(optimizer) is torch.optim.AdamW:
         optimizer_name = "adamw"
-    elif isinstance(optimizer, torch.optim.SGD):
+    elif type(optimizer) is torch.optim.Adam:
+        optimizer_name = "adam"
+    elif type(optimizer) is torch.optim.SGD:
         optimizer_name = "sgd"
-    elif isinstance(optimizer, IVON):
+    elif type(optimizer) is IVON:
         optimizer_name = "ivon"
     else:
         raise NotImplementedError(f"Unrecognized optimizer type: {type(optimizer)}.")

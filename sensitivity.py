@@ -9,6 +9,47 @@ import pathlib
 from tqdm import tqdm
 
 
+def _get_sigma2(optimizer: torch.optim.Optimizer, dataset_size: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    """
+    Takes in an optimizer and computes the corresponding estimate for sigma^2 used for sensitivity estimates.
+    """
+    if type(optimizer) is IVON:
+        # Initialize buffer to hold the variance (squared sigma) for each parameter as a vector of shape (n_params,)
+        sigma2_blocks = []
+        for group in optimizer.param_groups:
+            this_sigma2 = torch.reciprocal(group["ess"] * (group["hess"] + group["weight_decay"]))
+            sigma2_blocks.append(this_sigma2)
+
+        sigma2 = torch.cat(sigma2_blocks, dim=0)
+        return sigma2
+
+    elif type(optimizer) is torch.optim.SGD:
+        sigma2_blocks = []
+        for group in optimizer.param_groups:
+            size = 0
+            for param in group["params"]:
+                size += param.numel()
+            sigma2_blocks.append(
+                torch.reciprocal(dataset_size * (torch.ones(size, dtype=dtype, device=device) + group["weight_decay"]))
+            )
+        sigma2 = torch.cat(sigma2_blocks, dim=0)
+        return sigma2
+
+    elif type(optimizer) is torch.optim.AdamW:
+        sigma2_blocks = []
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                state = optimizer.state[param]
+                sigma2_blocks.append(
+                    torch.reciprocal(dataset_size * (torch.sqrt(state["exp_avg_sq"].reshape(-1)) + group["weight_decay"]))
+                )
+        sigma2 = torch.cat(sigma2_blocks, dim=0).to(device)
+        return sigma2
+    
+    else:
+        raise NotImplementedError(f"No means of computing sigma^2 for sensitivity estimates has been implemented for optimizer of type {type(optimizer)}.")
+                
+
 @torch.no_grad()
 def get_error_batch(x: torch.Tensor, y: torch.Tensor, model: nn.Module, n_classes: int) -> torch.Tensor:
     """
@@ -24,41 +65,38 @@ def get_error_batch(x: torch.Tensor, y: torch.Tensor, model: nn.Module, n_classe
     return error
 
 
-def get_variance_batch(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes: int) -> torch.Tensor:
+def get_variance_batch(x: torch.Tensor, model: nn.Module, optimizer: torch.optim.Optimizer, n_classes: int, dataset_size: int) -> torch.Tensor:
     """
     Get the variance estimate as described in appendix C.5. of the IVON paper for a batch of inputs x of shape (batch, *).
-    Uses the optimizer state of the IVON optimizer to retrieve the relevant variances.
+    Uses the optimizer state to retrieve the relevant variance estimates.
     Returns a tensor of shape (batch, n_classes, n_classes).
     """
 
     # The implementation here just calls get_variance_sincle on each data point in x and concatenates the results
     sub_results = []
     for i in range(x.size(0)):
-        sub_results.append(get_variance_single(x=x[i], model=model, ivon=ivon, n_classes=n_classes))
+        sub_results.append(get_variance_single(x=x[i], model=model, optimizer=optimizer, n_classes=n_classes, dataset_size=dataset_size))
     return torch.stack(sub_results, dim=0)
 
 
-def get_variance_single(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes: int) -> torch.Tensor:
+def get_variance_single(x: torch.Tensor, model: nn.Module, optimizer: torch.optim.Optimizer, n_classes: int, dataset_size: int) -> torch.Tensor:
     """
     Get the variance estimate described in appendix C.5. of the IVON paper for a single input x.
-    Uses the optimizer state of the IVON optimizer to retrieve the relevant variances.
+    Uses the optimizer state to retrieve the relevant variance estimates.
     Returns a tensor of shape (n_classes, n_classes).
     """
 
-    # Initialize buffers to hold the output jacobian of shape (n_params, n_classes)
+    # Initialize buffer to hold the output jacobian of shape (n_params, n_classes)
     jacobian = torch.zeros(0, n_classes, dtype=x.dtype, device=x.device)
 
-    # Initialize buffer to hold the variance (squared sigma) for each parameter as a vector of shape (n_params,)
-    sigma2 = torch.zeros(0, dtype=x.dtype, device=x.device)
+    # Extract the flattened vector of variances, shape (n_params, n_classes)
+    sigma2 = _get_sigma2(optimizer, dataset_size=dataset_size, dtype=x.dtype, device=x.device)
 
-    # Loop through all parameters to fill the jacobian and sigma buffers
-    for group in ivon.param_groups:
+    # Loop through all parameters to initialize Jacobian buffer
+    for group in optimizer.param_groups:
         for param in group["params"]:
             this_param_jacobian_shape = (param.numel(), n_classes)
             jacobian = torch.cat((jacobian, torch.zeros(this_param_jacobian_shape, dtype=x.dtype, device=x.device)), dim=0)
-
-        this_sigma2 = torch.reciprocal(group["ess"] * (group["hess"] + group["weight_decay"]))
-        sigma2 = torch.cat((sigma2, this_sigma2))
 
     # Number of parameters should be consistent with the size of the buffers
     n_parameters = jacobian.shape[0]
@@ -72,7 +110,7 @@ def get_variance_single(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes
         metric = output.squeeze(0)[i]
         assert metric.shape == ()
 
-        ivon.zero_grad()
+        optimizer.zero_grad()
         metric.backward()
 
         # Walk through the gradient parameter by parameter and fill the relevant sections of the jacobian
@@ -123,7 +161,7 @@ def eval_session(args):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
     # Initialize dataset
-    _, _, test_set = load_dataset(args.dataset, root=args.data_root)
+    train_set, _, test_set = load_dataset(args.dataset, root=args.data_root)
 
     # Create a subset containing only the class of interest
     single_category_set = Subset(test_set, [i for i in range(len(test_set)) if test_set[i][1] == args.showcase_category])
@@ -133,12 +171,11 @@ def eval_session(args):
 
     # Load the model, optimizer and hyperparameter config from file
     model, optimizer, config = load_checkpoint(
-        optimizer_name="ivon",
+        optimizer_name=args.optimizer,
         dataset_name=args.dataset,
         model_name=args.model,
         epoch=args.epoch
     )
-    assert isinstance(optimizer, IVON)
     model.to(device)
     model.eval()
 
@@ -147,7 +184,7 @@ def eval_session(args):
     for i, (x, y) in enumerate(tqdm(single_category_loader, desc="Evaluating sensitivities")):
         x = x.to(device)
         y = y.to(device)
-        v = get_variance_batch(x=x, model=model, ivon=optimizer, n_classes=config.n_classes)
+        v = get_variance_batch(x=x, model=model, optimizer=optimizer, n_classes=config.n_classes, dataset_size=len(train_set))
         e = get_error_batch(x=x, y=y, model=model, n_classes=config.n_classes)
 
         sensitivity = v @ e[:, :, None]  # Shape (batch, nc, nc) @ (batch, nc, 1) -> (batch, nc, 1)
@@ -227,6 +264,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model", type=str, default="resnet18", help="Name of model architecture to train. (default=%(default)s)", choices=SUPPORTED_ARCHITECTURES)
     parser.add_argument("-d", "--dataset", type=str, default="cifar10", help="Name of dataset to train. (default=%(default)s)", choices=SUPPORTED_DATASETS)
+    parser.add_argument("-o", "--optimizer", type=str, default="ivon", help="Name of optimizer to use for training (default=%(default)s)", choices=["ivon", "adamw", "sgd"])
     parser.add_argument("-e", "--epoch", type=int, default=200, help="Epoch of model checkpoint to load. (default=%(default)s)")
     parser.add_argument("--data-root", type=pathlib.Path, default=pathlib.Path("./data"), help="Directory where datasets are downloaded to. (default = '%(default)s')")
     parser.add_argument("--showcase-category", type=int, default=9, help="Index of category to use when getting example images with high/low sensitivity. (default=%(default)s)")
