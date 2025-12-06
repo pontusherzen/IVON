@@ -3,7 +3,7 @@ batch: 50
 epochs: 200
 warmup_epochs: 5
 optim:
-  lambda_: 50000
+  lambda_: 45000
   h0: 0.5
   beta1: 0.9
   beta2: 0.99999

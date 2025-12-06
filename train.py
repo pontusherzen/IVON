@@ -100,7 +100,7 @@ def train_session(args):
         warn("Could not find CUDA device, running on CPU")
 
     # Load relevant dataset
-    train_set, val_set = load_dataset(args.dataset, root=args.data_root)
+    train_set, val_set, _test_set = load_dataset(args.dataset, root=args.data_root)
 
     # Get hyperaparameter config
     if args.config_path is None:
@@ -109,6 +109,8 @@ def train_session(args):
         raise FileNotFoundError(f"Could not find hyperparameter config file '{args.config_path}'.")
     config = OmegaConf.load(args.config_path)
     assert isinstance(config, DictConfig)
+
+    print(f"Will train with config: {config}")
 
     # Create DataLoaders
     train_loader = DataLoader(train_set, batch_size=config.batch, shuffle=True)

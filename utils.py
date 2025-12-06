@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torchvision.transforms.v2 import Compose, RandomCrop, RandomHorizontalFlip, ToImage, ToDtype, Normalize
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 from torchvision.datasets import CIFAR10, CIFAR100
 
@@ -13,9 +13,17 @@ import pathlib
 from typing import Tuple, Optional
 
 
-# ImageNet statistics for normalization 
-NORM_MEAN = torch.tensor([0.485, 0.456, 0.406])
-NORM_STD = torch.tensor([0.229, 0.224, 0.225])
+# Normalization statistics
+_CIFAR_MEAN = torch.tensor([0.485, 0.456, 0.406])
+_CIFAR_STD = torch.tensor([0.229, 0.224, 0.225])
+_NORM_MEAN = {
+    "cifar10": _CIFAR_MEAN,
+    "cifar100": _CIFAR_MEAN,
+}
+_NORM_STD = {
+    "cifar10": _CIFAR_STD,
+    "cifar100": _CIFAR_STD
+}
 
 
 # Valid names of optimizers used in constructors
@@ -28,43 +36,63 @@ SUPPORTED_ARCHITECTURES = [f"resnet{number}" for number in [18, 34, 50, 101, 152
 SUPPORTED_DATASETS = ["cifar10", "cifar100"]
 
 
-def load_dataset(name: str, root: pathlib.Path = pathlib.Path("data")) -> Tuple[Dataset, Dataset]:
+def load_dataset(name: str, train_ratio: float = 0.9, root: pathlib.Path = pathlib.Path("data"), seed: int = 42) -> Tuple[Dataset, Dataset, Dataset]:
     """
-    Loads the dataset with name 'name' and returns a tuple (train_set, val_set)
+    Loads the dataset with name 'name', creates a train/val split with ration 'train_ratio' (and given random seed)
+    and returns a tuple (train_set, val_set, test_set)
     """
+    if name not in SUPPORTED_DATASETS:
+        raise ValueError(f"Dataset '{name}' not supported. Must be one of {SUPPORTED_DATASETS}.")
+
+    mean, std = _NORM_MEAN[name].tolist(), _NORM_STD[name].tolist()
+
     transform_train = Compose([
         RandomCrop(32, padding=4),
         RandomHorizontalFlip(),
         ToImage(),
         ToDtype(torch.float32, scale=True),
-        Normalize(mean=NORM_MEAN.tolist(), std=NORM_STD.tolist())
+        Normalize(mean=mean, std=std)
     ])
     transform_val = Compose([
         ToImage(),
         ToDtype(torch.float32, scale=True),
-        Normalize(mean=NORM_MEAN.tolist(), std=NORM_STD.tolist())
+        Normalize(mean=mean, std=std)
     ])
 
     if name == "cifar10":
         train_set = CIFAR10(root=root, train=True, download=True, transform=transform_train)
-        val_set = CIFAR10(root=root, train=False, download=True, transform=transform_val)
+        val_set = CIFAR10(root=root, train=True, download=True, transform=transform_val)
+        test_set = CIFAR10(root=root, train=False, download=True, transform=transform_val)
     elif name == "cifar100":
         train_set = CIFAR100(root=root, train=True, download=True, transform=transform_train)
-        val_set = CIFAR100(root=root, train=False, download=True, transform=transform_val)
+        val_set = CIFAR10(root=root, train=True, download=True, transform=transform_val)
+        test_set = CIFAR100(root=root, train=False, download=True, transform=transform_val)
     else:
         raise NotImplementedError(f"Unrecognized dataset name '{name}'.")
 
-    return train_set, val_set
+    # Do a train-val split
+    n_train = int(len(train_set) * train_ratio)
+
+    idx = torch.randperm(len(train_set), generator=torch.Generator().manual_seed(seed))
+    train_idx = idx[:n_train]
+    val_idx = idx[n_train:]
+    assert len(train_idx) + len(val_idx) == len(train_set)
+
+    train_set = Subset(train_set, indices=train_idx.tolist())
+    val_set = Subset(val_set, indices=val_idx.tolist())
+
+    return train_set, val_set, test_set
 
 
-def denormalize(img_tensor: torch.Tensor) -> torch.Tensor:
+def denormalize(img_tensor: torch.Tensor, dataset_name: str) -> torch.Tensor:
     """
-    Takes in a normalized image tensor of shape 
-    (batch, 3, height, width)
+    Takes in a normalized image tensor of shape (batch, 3, height, width)
+    and a dataset name used for getting relevant normalization values,
     and returns a denormalized image tensor of shape
     (batch, height, width, 3)
     """
-    img_01 = img_tensor * NORM_STD[None, :, None, None] + NORM_MEAN[None, :, None, None]
+    mean, std = _NORM_MEAN[dataset_name], _NORM_STD[dataset_name]
+    img_01 = img_tensor * std[None, :, None, None] + mean[None, :, None, None]
     img_01 = img_01.clamp(min=0.0, max=1.0).permute(0, 2, 3, 1)
     return img_01
 
@@ -97,6 +125,10 @@ def init_model(name: str, n_classes: int) -> nn.Module:
 
 
 def init_optimizer(model: nn.Module, name: str, config: DictConfig):
+    """
+    Creates an empty optimizer for model 'model' using an optimizer name 'name' and hyperparameter DictConfig 'config'
+    """
+
     if name not in SUPPORTED_OPTIMIZERS:
         raise ValueError(f"Provided optimizer name '{name}' not supported. Must be one of {SUPPORTED_OPTIMIZERS}.")
 
@@ -109,6 +141,27 @@ def init_optimizer(model: nn.Module, name: str, config: DictConfig):
             beta2 = config.optim.beta2,
             weight_decay=config.optim.weight_decay,
             hess_init=config.optim.h0
+        )
+    elif name == "adamw":
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=config.lr,
+            betas=(config.optim.beta1, config.optim.beta2),
+            weight_decay=config.optim.weight_decay,
+        )
+    elif name == "adam":
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=config.lr,
+            betas=(config.optim.beta1, config.optim.beta2),
+            weight_decay=config.optim.weight_decay
+        )
+    elif name == "sgd":
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=config.lr,
+            momentum=config.optim.beta1,
+            weight_decay=config.optim.weight_decay,
         )
     else:
         raise NotImplementedError(f"Initializing optimizer {name} not implemented yet")  # TODO
@@ -179,12 +232,12 @@ def load_checkpoint(optimizer_name: str,
     """
     # Check that the optimizer asked for is valid
     if not optimizer_name in SUPPORTED_OPTIMIZERS:
-        raise ValueError("Provided optimizer name '{optimizer_name}' not supported. Must be one of {SUPPORTED_OPTIMIZERS}.")
+        raise ValueError(f"Provided optimizer name '{optimizer_name}' not supported. Must be one of {SUPPORTED_OPTIMIZERS}.")
 
     # Check that save directory exists
     directory = checkpoint_dir / dataset_name
     if not directory.exists():
-        raise FileNotFoundError("Found no saved checkpoints with dataset '{dataset_name}'. Directory '{directory}' does not exist.")
+        raise FileNotFoundError(f"Found no saved checkpoints with dataset '{dataset_name}'. Directory '{directory}' does not exist.")
 
     # Create the path based on passed params
     path = directory / f"{model_name}__{optimizer_name}__{epoch}.pt"

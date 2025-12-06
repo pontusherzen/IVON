@@ -123,13 +123,12 @@ def eval_session(args):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
     # Initialize dataset
-    _, val_set = load_dataset(args.dataset, root=args.data_root)
+    _, _, test_set = load_dataset(args.dataset, root=args.data_root)
 
     # Create a subset containing only the class of interest
-    single_category_set = Subset(val_set, [i for i in range(len(val_set)) if val_set[i][1] == args.showcase_category])
+    single_category_set = Subset(test_set, [i for i in range(len(test_set)) if test_set[i][1] == args.showcase_category])
 
     # Create dataloaders
-    val_loader = DataLoader(val_set, batch_size=10)
     single_category_loader = DataLoader(single_category_set, shuffle=False, batch_size=10)
 
     # Load the model, optimizer and hyperparameter config from file
@@ -187,7 +186,10 @@ def eval_session(args):
     for i in range(axs.size):
         ax = axs.flatten()[i]
         img_idx = sorted_sensitivities[i]
-        ax.imshow(denormalize(single_category_set[img_idx][0]).squeeze(0))
+        norm_img = single_category_set[img_idx][0]
+        ax.imshow(
+            denormalize(norm_img, dataset_name=args.dataset).squeeze(0)
+        )
         ax.axis("off")
     path_jpg = figdir / f"least_sensitive__{args.dataset}__category{args.showcase_category}__{args.model}__epoch{args.epoch}.jpg"
     path_svg = path_jpg.with_suffix(".svg")
@@ -200,7 +202,10 @@ def eval_session(args):
     for i in range(axs.size):
         ax = axs.flatten()[i]
         img_idx = sorted_sensitivities[-i-1]
-        ax.imshow(denormalize(single_category_set[img_idx][0]).squeeze(0))
+        norm_img = single_category_set[img_idx][0]
+        ax.imshow(
+            denormalize(norm_img, dataset_name=args.dataset).squeeze(0)
+        )
         ax.axis("off")
     path_jpg = figdir / f"most_sensitive__{args.dataset}__category{args.showcase_category}__{args.model}__epoch{args.epoch}.jpg"
     path_svg = path_jpg.with_suffix(".svg")
