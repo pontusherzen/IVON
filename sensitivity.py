@@ -57,7 +57,7 @@ def get_variance_single(x: torch.Tensor, model: nn.Module, ivon: IVON, n_classes
             this_param_jacobian_shape = (param.numel(), n_classes)
             jacobian = torch.cat((jacobian, torch.zeros(this_param_jacobian_shape, dtype=x.dtype, device=x.device)), dim=0)
 
-        this_sigma2 = 1.0 / group["ess"] * (group["hess"] + group["weight_decay"])
+        this_sigma2 = torch.reciprocal(group["ess"] * (group["hess"] + group["weight_decay"]))
         sigma2 = torch.cat((sigma2, this_sigma2))
 
     # Number of parameters should be consistent with the size of the buffers
