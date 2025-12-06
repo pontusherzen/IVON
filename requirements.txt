@@ -1,0 +1,10 @@
+torch
+torchvision
+ivon-opt  # Official implementation of ivon optimizer
+matplotlib
+numpy
+tqdm  # Pretty printing of progress bars
+omegaconf  # Convenient hyperparameter configs
+seaborn
+pandas
+scikit-learn
