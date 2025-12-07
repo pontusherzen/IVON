@@ -58,4 +58,7 @@ python3 loo.py --optimizer adamw --limit-train 1000
 
 ### Other experiments
 The remaining experiments, including performance on in-distribution and out-of-distribution data, as well as the DIVON extension, is given in the relevant Jupyter notebooks.
+- [Training.ipynb](./Training.ipynb) showcases the setup used to train checkpoints for the various experiments
+- [Basic_eval.ipynb](./Basic_eval.ipynb) includes simple evaluations on the trained models, comparing loss, accuracy, calibration etc, and also doing an ablation on the MC sample parameters.
+- [OOD.ipynb](./OOD.ipynb) includes experiments shoing the efficacy of using IVON for out-of-distribution (OOD) detection.
 
