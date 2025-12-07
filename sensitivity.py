@@ -174,9 +174,9 @@ def eval_session(args):
         optimizer_name=args.optimizer,
         dataset_name=args.dataset,
         model_name=args.model,
-        epoch=args.epoch
+        epoch=args.epoch,
+        device=device
     )
-    model.to(device)
     model.eval()
 
     # Run through the data for all items of the showcase category and compute sensitivies

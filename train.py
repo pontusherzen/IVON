@@ -9,7 +9,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from utils import save_checkpoint
 
-from typing import Tuple, Optional
+from typing import Tuple, List, Optional
 
 
 def train(dataset_name: str,
@@ -18,7 +18,7 @@ def train(dataset_name: str,
           optimizer: torch.optim.Optimizer,
           train_loader: DataLoader[Tuple[torch.Tensor, torch.Tensor]],
           config: DictConfig,
-          val_loader: Optional[DataLoader[Tuple[torch.Tensor, torch.Tensor]]] = None):
+          val_loader: Optional[DataLoader[Tuple[torch.Tensor, torch.Tensor]]] = None) -> Tuple[List[float], Optional[List[float]]]:
     """
     Runs a training loop with hyperparameters 'config'.
     Checkpoints are regularly saved to file, and loss statistics are printed while training
@@ -38,6 +38,8 @@ def train(dataset_name: str,
     schedule = ChainedScheduler([warmup, annealing], optimizer)
 
     # Do the training
+    train_losses = []
+    val_losses = []
     for epoch in range(config.epochs):
         running_loss = 0.0
 
@@ -48,11 +50,13 @@ def train(dataset_name: str,
 
             # IVON and normal optimizers need to be handled separately, since IVON requires sampling
             if isinstance(optimizer, IVON):
-                with optimizer.sampled_params(train=True):
-                    optimizer.zero_grad()
-                    logits = model(x)
-                    loss = nn.functional.cross_entropy(logits, y)
-                    loss.backward()
+                # Do n_samples training MC samples
+                for _ in range(config.optim.n_samples):
+                    with optimizer.sampled_params(train=True):
+                        optimizer.zero_grad()
+                        logits = model(x)
+                        loss = nn.functional.cross_entropy(logits, y)
+                        loss.backward()
             else:
                 optimizer.zero_grad()
                 logits = model(x)
@@ -80,9 +84,16 @@ def train(dataset_name: str,
         print(f"Epoch {epoch}; train_loss={running_loss:.4g}" 
               + (f"; val_loss={running_loss_val:.4g}" if running_loss_val is not None else ""))
 
+        train_losses.append(running_loss)
+        if running_loss_val is not None:
+            val_losses.append(running_loss_val)
+
         # Save model checkpoint
-        if (epoch + 1) in [1, 2, 5, 10, 25] or (epoch + 1) % 50 == 0:
+        if (epoch + 1) in [1, 2, 5, 10] or (epoch + 1) % 25 == 0:
             save_checkpoint(model, optimizer, dataset_name=dataset_name, model_name=model_name, epoch=epoch + 1, config=config)
+
+    # Return the losses
+    return train_losses, (val_losses if val_losses else None)
 
 
 def train_session(args):

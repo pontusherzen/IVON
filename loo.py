@@ -135,7 +135,8 @@ def compare_loo_and_test_loss(args):
             optimizer_name=args.optimizer,
             dataset_name=args.dataset,
             model_name=args.model,
-            epoch=epoch
+            epoch=epoch,
+            device=torch.device("cpu")
         )
 
     # Then do the actual evaluation
@@ -149,7 +150,8 @@ def compare_loo_and_test_loss(args):
             optimizer_name=args.optimizer,
             dataset_name=args.dataset,
             model_name=args.model,
-            epoch=epoch
+            epoch=epoch,
+            device=device
         )
         model.to(device)
         model.eval()
@@ -200,7 +202,7 @@ def _test_loo():
     test_loader = DataLoader(test_set, batch_size=20, shuffle=False)
 
     # Load a trained model
-    model, optimizer, config = load_checkpoint("ivon", "cifar10", "resnet18", epoch=200)
+    model, optimizer, config = load_checkpoint("ivon", "cifar10", "resnet18", epoch=200, device=device)
     model.to(device)
     assert isinstance(optimizer, IVON)
 

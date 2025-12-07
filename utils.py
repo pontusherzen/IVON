@@ -209,7 +209,12 @@ def save_checkpoint(model: nn.Module,
         raise NotImplementedError(f"Unrecognized optimizer type: {type(optimizer)}.")
     assert optimizer_name in SUPPORTED_OPTIMIZERS
 
-    path = directory / f"{model_name}__{optimizer_name}__{epoch}.pt"
+    if optimizer_name == "ivon" and config.optim.n_samples > 1:
+        n_samples = config.optim.n_samples
+        path = directory / f"{model_name}__{optimizer_name}__{epoch}__samples{n_samples}.pt"
+    else:
+        path = directory / f"{model_name}__{optimizer_name}__{epoch}.pt"
+
     print(f"Saving checkpoint to '{path}' ...")
     state = {
         "model": model.state_dict(),
@@ -226,6 +231,8 @@ def load_checkpoint(optimizer_name: str,
                     dataset_name: str, 
                     model_name: str, 
                     epoch: int, 
+                    device: torch.device,
+                    n_samples: Optional[int] = None,
                     checkpoint_dir: pathlib.Path = pathlib.Path("checkpoints")) -> Tuple[nn.Module, torch.optim.Optimizer, DictConfig]:
     """
     Reads in a checkpoint and constructs a model and optimizer according to the loaded states.
@@ -242,7 +249,10 @@ def load_checkpoint(optimizer_name: str,
         raise FileNotFoundError(f"Found no saved checkpoints with dataset '{dataset_name}'. Directory '{directory}' does not exist.")
 
     # Create the path based on passed params
-    path = directory / f"{model_name}__{optimizer_name}__{epoch}.pt"
+    if n_samples is not None:
+        path = directory / f"{model_name}__{optimizer_name}__{epoch}__samples{n_samples}.pt"
+    else:
+        path = directory / f"{model_name}__{optimizer_name}__{epoch}.pt"
 
     # Check that the specific path exists
     if not path.exists():
@@ -258,6 +268,7 @@ def load_checkpoint(optimizer_name: str,
 
     # Initialize model with given hyperparameters, and then load the params
     model = init_model(name=metadata["model"], n_classes=config.n_classes)
+    model.to(device)
     model.load_state_dict(state["model"])
 
     # If the optimizer is IVON, we initialize an appropriate optimizer setup and load its state

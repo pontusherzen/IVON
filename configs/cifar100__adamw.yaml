@@ -1,12 +1,9 @@
-lr: 0.2
+lr: 0.002
 batch: 50
 epochs: 200
 warmup_epochs: 5
 optim:
-  n_samples: 1
-  lambda_: 45000
-  h0: 0.5
   beta1: 0.9
-  beta2: 0.99999
+  beta2: 0.999
   weight_decay: 0.0002
 n_classes: 100
