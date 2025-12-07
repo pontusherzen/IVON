@@ -30,7 +30,7 @@ _NORM_STD = {
 SUPPORTED_OPTIMIZERS = ["adam", "adamw", "sgd", "ivon"]
 
 # Valid names of model architectures used in constructors
-SUPPORTED_ARCHITECTURES = [f"resnet{number}" for number in [18, 34, 50, 101, 152]]
+SUPPORTED_ARCHITECTURES = [f"resnet{number}" for number in [18, 20, 34, 50, 101, 152]]
 
 # Valid dataset names
 SUPPORTED_DATASETS = ["cifar10", "cifar100"]
@@ -102,12 +102,14 @@ def init_model(name: str, n_classes: int) -> nn.Module:
     Initializes a torch model based on the name of the architecture and the number of ouput classes.
     """
     from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+    from resnet20 import ResNet20
 
     if name not in SUPPORTED_ARCHITECTURES:
         raise ValueError(f"Provided architecture name '{name}' not supported. Must be one of {SUPPORTED_ARCHITECTURES}.")
 
     resnet_builders = {
         "resnet18": resnet18,
+        "resnet20": ResNet20,
         "resnet34": resnet34,
         "resnet50": resnet50,
         "resnet101": resnet101,
