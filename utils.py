@@ -65,7 +65,7 @@ def load_dataset(name: str, train_ratio: float = 0.9, root: pathlib.Path = pathl
         test_set = CIFAR10(root=root, train=False, download=True, transform=transform_val)
     elif name == "cifar100":
         train_set = CIFAR100(root=root, train=True, download=True, transform=transform_train)
-        val_set = CIFAR10(root=root, train=True, download=True, transform=transform_val)
+        val_set = CIFAR100(root=root, train=True, download=True, transform=transform_val)
         test_set = CIFAR100(root=root, train=False, download=True, transform=transform_val)
     else:
         raise NotImplementedError(f"Unrecognized dataset name '{name}'.")
